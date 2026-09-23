@@ -21,7 +21,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 
 # =========================================================
-# CONFIG
+# ENV
 # =========================================================
 
 load_dotenv()
@@ -40,20 +40,24 @@ if not RAZORPAY_KEY_SECRET:
     raise ValueError("RAZORPAY_KEY_SECRET missing")
 
 
-RAZORPAY_BASE = "https://api.razorpay.com/v1"
+# =========================================================
+# BOT
+# =========================================================
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
+
+RAZORPAY_API = "https://api.razorpay.com/v1"
+
+DB = "payments.db"
 
 
 # =========================================================
 # DATABASE
 # =========================================================
 
-DB = "payments.db"
-
-
 def init_db():
+
     conn = sqlite3.connect(DB)
 
     conn.execute("""
@@ -61,7 +65,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             order_id TEXT NOT NULL UNIQUE,
-            razorpay_qr_id TEXT,
+            qr_id TEXT,
             amount INTEGER NOT NULL,
             status TEXT NOT NULL,
             created_at TEXT NOT NULL,
@@ -83,6 +87,7 @@ def save_payment(
     amount,
     expires_at
 ):
+
     conn = sqlite3.connect(DB)
 
     conn.execute("""
@@ -90,7 +95,7 @@ def save_payment(
         (
             user_id,
             order_id,
-            razorpay_qr_id,
+            qr_id,
             amount,
             status,
             created_at,
@@ -104,7 +109,7 @@ def save_payment(
         amount,
         "pending",
         datetime.now(timezone.utc).isoformat(),
-        expires_at.isoformat(),
+        expires_at.isoformat()
     ))
 
     conn.commit()
@@ -112,6 +117,7 @@ def save_payment(
 
 
 def get_payment(user_id):
+
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
 
@@ -129,34 +135,34 @@ def get_payment(user_id):
     return dict(row) if row else None
 
 
-def update_status(order_id, status):
+def update_payment(order_id, status):
+
     conn = sqlite3.connect(DB)
 
     conn.execute("""
         UPDATE payments
         SET status = ?
         WHERE order_id = ?
-    """, (status, order_id))
+    """, (
+        status,
+        order_id
+    ))
 
     conn.commit()
     conn.close()
 
 
 # =========================================================
-# FSM
+# RAZORPAY API
 # =========================================================
 
-class PaymentState(StatesGroup):
-    amount = State()
+def razorpay_request(
+    method,
+    endpoint,
+    data=None
+):
 
-
-# =========================================================
-# RAZORPAY REQUEST
-# =========================================================
-
-def razorpay_request(method, endpoint, data=None):
-
-    url = RAZORPAY_BASE + endpoint
+    url = RAZORPAY_API + endpoint
 
     response = requests.request(
         method=method,
@@ -177,11 +183,23 @@ def razorpay_request(method, endpoint, data=None):
         }
 
     if not response.ok:
+
         raise Exception(
-            f"Razorpay Error {response.status_code}: {result}"
+            f"Razorpay Error "
+            f"{response.status_code}: "
+            f"{result}"
         )
 
     return result
+
+
+# =========================================================
+# STATES
+# =========================================================
+
+class PaymentState(StatesGroup):
+
+    amount = State()
 
 
 # =========================================================
@@ -254,7 +272,7 @@ def amount_keyboard():
 
             [
                 InlineKeyboardButton(
-                    text="Del",
+                    text="⌫",
                     callback_data="num_del"
                 ),
                 InlineKeyboardButton(
@@ -262,14 +280,14 @@ def amount_keyboard():
                     callback_data="num_0"
                 ),
                 InlineKeyboardButton(
-                    text="Pay",
+                    text="💳 Pay",
                     callback_data="num_pay"
                 )
             ],
 
             [
                 InlineKeyboardButton(
-                    text="Cancel",
+                    text="❌ Cancel",
                     callback_data="cancel_amount"
                 )
             ]
@@ -318,20 +336,18 @@ def new_payment_keyboard():
 # =========================================================
 
 @dp.message(CommandStart())
-async def start(message: Message, state: FSMContext):
+async def start_handler(
+    message: Message,
+    state: FSMContext
+):
 
     await state.clear()
 
-    text = (
-        "Welcome!\n\n"
-        "UPI Auto Payment Bot\n\n"
-        "Add money instantly via UPI.\n"
-        "Payments are verified through Razorpay.\n\n"
-        "Use Pay Now to make a payment."
-    )
-
     await message.answer(
-        text,
+        "Welcome!\n\n"
+        "💳 UPI Auto Payment Bot\n\n"
+        "Create a secure Razorpay payment QR.\n"
+        "Payment request expires in 15 minutes.",
         reply_markup=start_keyboard()
     )
 
@@ -348,22 +364,26 @@ async def pay_now(
 
     await state.clear()
 
-    await state.update_data(amount="")
+    await state.update_data(
+        amount=""
+    )
 
     await callback.message.answer(
-        "UPI Auto Payment\n\n"
+        "💳 UPI Auto Payment\n\n"
         "Enter amount (min Rs 1)\n\n"
         "Rs 0",
         reply_markup=amount_keyboard()
     )
 
-    await state.set_state(PaymentState.amount)
+    await state.set_state(
+        PaymentState.amount
+    )
 
     await callback.answer()
 
 
 # =========================================================
-# AMOUNT KEYPAD
+# KEYPAD
 # =========================================================
 
 @dp.callback_query(
@@ -375,16 +395,19 @@ async def keypad(
     state: FSMContext
 ):
 
-    action = callback.data.replace("num_", "")
+    action = callback.data.replace(
+        "num_",
+        ""
+    )
 
     data = await state.get_data()
 
-    amount = data.get("amount", "")
+    amount = data.get(
+        "amount",
+        ""
+    )
 
-    # -----------------------------------------
     # DELETE
-    # -----------------------------------------
-
     if action == "del":
 
         amount = amount[:-1]
@@ -396,7 +419,7 @@ async def keypad(
         display = amount or "0"
 
         await callback.message.edit_text(
-            "UPI Auto Payment\n\n"
+            "💳 UPI Auto Payment\n\n"
             "Enter amount (min Rs 1)\n\n"
             f"Rs {display}",
             reply_markup=amount_keyboard()
@@ -406,16 +429,13 @@ async def keypad(
 
         return
 
-    # -----------------------------------------
     # PAY
-    # -----------------------------------------
-
     if action == "pay":
 
         if not amount:
 
             await callback.answer(
-                "Please enter amount.",
+                "Amount enter karo.",
                 show_alert=True
             )
 
@@ -426,7 +446,7 @@ async def keypad(
         if amount_int < 1:
 
             await callback.answer(
-                "Minimum amount is Rs 1.",
+                "Minimum amount Rs 1 hai.",
                 show_alert=True
             )
 
@@ -439,7 +459,7 @@ async def keypad(
         except Exception:
             pass
 
-        await create_razorpay_qr(
+        await create_qr(
             callback.message,
             amount_int
         )
@@ -448,10 +468,7 @@ async def keypad(
 
         return
 
-    # -----------------------------------------
-    # NUMBER
-    # -----------------------------------------
-
+    # DIGIT
     if action.isdigit():
 
         if len(amount) >= 8:
@@ -473,7 +490,7 @@ async def keypad(
         )
 
         await callback.message.edit_text(
-            "UPI Auto Payment\n\n"
+            "💳 UPI Auto Payment\n\n"
             "Enter amount (min Rs 1)\n\n"
             f"Rs {amount}",
             reply_markup=amount_keyboard()
@@ -486,7 +503,7 @@ async def keypad(
 # CREATE RAZORPAY QR
 # =========================================================
 
-async def create_razorpay_qr(
+async def create_qr(
     message: Message,
     amount: int
 ):
@@ -494,33 +511,36 @@ async def create_razorpay_qr(
     user_id = message.from_user.id
 
     order_id = (
-        f"ORD-"
-        f"{datetime.now().strftime('%Y%m%d')}-"
-        f"{uuid.uuid4().hex[:8].upper()}"
+        "ORD-"
+        + datetime.now().strftime("%Y%m%d")
+        + "-"
+        + uuid.uuid4().hex[:8].upper()
     )
 
-    # 15 minutes
     expires_at = (
         datetime.now(timezone.utc)
         + timedelta(minutes=15)
     )
 
-    # Unix timestamp for Razorpay
     close_by = int(
         expires_at.timestamp()
     )
 
+    # -----------------------------------------------------
+    # IMPORTANT:
+    # Razorpay QR API payload
+    # -----------------------------------------------------
+
     payload = {
 
-        "type": "upi",
+        "type": "upi_qr",
 
-        "name": "Payment",
+        "name": "Telegram Payment",
 
         "usage": "single_use",
 
         "fixed_amount": True,
 
-        # Razorpay amount = paise
         "payment_amount": amount * 100,
 
         "description": order_id,
@@ -546,7 +566,7 @@ async def create_razorpay_qr(
 
         await message.answer(
             "❌ Razorpay QR generate nahi ho paya.\n\n"
-            f"Error: {str(e)[:500]}"
+            f"{str(e)}"
         )
 
         return
@@ -558,7 +578,7 @@ async def create_razorpay_qr(
     if not qr_id or not image_url:
 
         await message.answer(
-            "❌ Razorpay ne QR response nahi diya.\n\n"
+            "❌ Razorpay QR response incomplete hai.\n\n"
             f"{qr}"
         )
 
@@ -575,10 +595,10 @@ async def create_razorpay_qr(
     caption = (
         "💳 UPI Auto Payment\n\n"
         f"Amount: Rs {amount}\n"
-        f"Order: {order_id}\n\n"
-        "1. Scan QR with GPay / PhonePe / Paytm\n"
-        f"2. Pay exactly Rs {amount}\n"
-        "3. Tap Check Payment\n\n"
+        f"Order ID: {order_id}\n\n"
+        "1️⃣ Scan QR with GPay / PhonePe / Paytm\n"
+        f"2️⃣ Pay exactly Rs {amount}\n"
+        "3️⃣ Tap Check Payment\n\n"
         "⏳ Expires in 15 minutes"
     )
 
@@ -588,7 +608,6 @@ async def create_razorpay_qr(
         reply_markup=payment_keyboard()
     )
 
-    # Local expiry timer
     asyncio.create_task(
         expiry_timer(
             user_id,
@@ -598,7 +617,7 @@ async def create_razorpay_qr(
 
 
 # =========================================================
-# EXPIRY TIMER
+# EXPIRY
 # =========================================================
 
 async def expiry_timer(
@@ -606,9 +625,13 @@ async def expiry_timer(
     order_id: str
 ):
 
-    await asyncio.sleep(15 * 60)
+    await asyncio.sleep(
+        15 * 60
+    )
 
-    payment = get_payment(user_id)
+    payment = get_payment(
+        user_id
+    )
 
     if not payment:
         return
@@ -619,7 +642,7 @@ async def expiry_timer(
     if payment["status"] != "pending":
         return
 
-    update_status(
+    update_payment(
         order_id,
         "expired"
     )
@@ -631,7 +654,7 @@ async def expiry_timer(
             razorpay_request,
             "POST",
             f"/payments/qr_codes/"
-            f"{payment['razorpay_qr_id']}/close"
+            f"{payment['qr_id']}/close"
         )
 
     except Exception:
@@ -642,14 +665,18 @@ async def expiry_timer(
 # CHECK PAYMENT
 # =========================================================
 
-@dp.callback_query(F.data == "check_payment")
+@dp.callback_query(
+    F.data == "check_payment"
+)
 async def check_payment(
     callback: CallbackQuery
 ):
 
     user_id = callback.from_user.id
 
-    payment = get_payment(user_id)
+    payment = get_payment(
+        user_id
+    )
 
     if not payment:
 
@@ -664,13 +691,12 @@ async def check_payment(
         payment["expires_at"]
     )
 
-    # -----------------------------------------
-    # LOCAL EXPIRY CHECK
-    # -----------------------------------------
+    # EXPIRED
+    if datetime.now(
+        timezone.utc
+    ) >= expires_at:
 
-    if datetime.now(timezone.utc) >= expires_at:
-
-        update_status(
+        update_payment(
             payment["order_id"],
             "expired"
         )
@@ -681,9 +707,8 @@ async def check_payment(
                 caption=(
                     "⏰ Payment Expired\n\n"
                     f"Amount: Rs {payment['amount']}\n"
-                    f"Order: {payment['order_id']}\n\n"
-                    "This payment request has expired.\n"
-                    "Please create a new payment."
+                    f"Order ID: {payment['order_id']}\n\n"
+                    "This payment request has expired."
                 ),
                 reply_markup=new_payment_keyboard()
             )
@@ -698,17 +723,14 @@ async def check_payment(
 
         return
 
-    # -----------------------------------------
-    # RAZORPAY PAYMENT CHECK
-    # -----------------------------------------
-
+    # RAZORPAY CHECK
     try:
 
         result = await asyncio.to_thread(
             razorpay_request,
             "GET",
             f"/payments/qr_codes/"
-            f"{payment['razorpay_qr_id']}/payments"
+            f"{payment['qr_id']}/payments"
         )
 
     except Exception as e:
@@ -720,32 +742,29 @@ async def check_payment(
 
         return
 
-    items = result.get("items", [])
+    items = result.get(
+        "items",
+        []
+    )
 
-    successful_payment = None
+    paid = None
 
     for p in items:
 
-        status = p.get("status")
-
-        amount_paid = p.get("amount")
-
         if (
-            status == "captured"
-            and amount_paid == payment["amount"] * 100
+            p.get("status") == "captured"
+            and
+            p.get("amount")
+            == payment["amount"] * 100
         ):
 
-            successful_payment = p
-
+            paid = p
             break
 
-    # -----------------------------------------
     # SUCCESS
-    # -----------------------------------------
+    if paid:
 
-    if successful_payment:
-
-        update_status(
+        update_payment(
             payment["order_id"],
             "paid"
         )
@@ -754,45 +773,46 @@ async def check_payment(
             caption=(
                 "✅ Payment Successful!\n\n"
                 f"Amount: Rs {payment['amount']}\n"
-                f"Order: {payment['order_id']}\n\n"
+                f"Order ID: {payment['order_id']}\n\n"
                 "Payment verified successfully."
             ),
             reply_markup=new_payment_keyboard()
         )
 
         await callback.answer(
-            "Payment verified successfully!",
+            "Payment verified!",
             show_alert=True
         )
 
         return
 
-    # -----------------------------------------
     # PENDING
-    # -----------------------------------------
-
     await callback.answer(
-        "⏳ Payment not received yet.",
+        "⏳ Payment abhi receive nahi hua.",
         show_alert=True
     )
 
 
 # =========================================================
-# CANCEL PAYMENT
+# CANCEL
 # =========================================================
 
-@dp.callback_query(F.data == "cancel_payment")
+@dp.callback_query(
+    F.data == "cancel_payment"
+)
 async def cancel_payment(
     callback: CallbackQuery
 ):
 
     user_id = callback.from_user.id
 
-    payment = get_payment(user_id)
+    payment = get_payment(
+        user_id
+    )
 
     if payment:
 
-        update_status(
+        update_payment(
             payment["order_id"],
             "cancelled"
         )
@@ -803,7 +823,7 @@ async def cancel_payment(
                 razorpay_request,
                 "POST",
                 f"/payments/qr_codes/"
-                f"{payment['razorpay_qr_id']}/close"
+                f"{payment['qr_id']}/close"
             )
 
         except Exception:
@@ -823,13 +843,35 @@ async def cancel_payment(
 
 
 # =========================================================
+# CANCEL AMOUNT
+# =========================================================
+
+@dp.callback_query(
+    F.data == "cancel_amount"
+)
+async def cancel_amount(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    await state.clear()
+
+    await callback.message.edit_text(
+        "❌ Payment cancelled.",
+        reply_markup=start_keyboard()
+    )
+
+    await callback.answer()
+
+
+# =========================================================
 # RUN
 # =========================================================
 
 async def main():
 
     print("================================")
-    print("Razorpay Payment Bot Started")
+    print("Razorpay Telegram Bot Started")
     print("================================")
 
     await dp.start_polling(bot)
